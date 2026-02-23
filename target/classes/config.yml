@@ -1,0 +1,54 @@
+#            Worth Items — config.yml
+
+# ── Tier price ranges ───────────────────────────────────────────────────────
+# Each tier generates a random price in [min, max] on first lookup.
+# Result is cached and saved to prices.yml (survives restarts).
+tiers:
+  junk:
+    min: 0
+    max: 5
+  common:
+    min: 5
+    max: 15
+  uncommon:
+    min: 15
+    max: 40
+  rare:
+    min: 40
+    max: 120
+  epic:
+    min: 120
+    max: 400
+  legendary:
+    min: 400
+    max: 3000
+
+# ── Special item overrides ──────────────────────────────────────────────────
+# These ALWAYS use the exact price defined here — no randomization.
+# Use Bukkit Material names (all caps, underscores).
+# Only list genuine exceptions; everything else is handled automatically.
+special-items:
+  DIAMOND: 250
+  DIAMOND_BLOCK: 2200
+  NETHER_STAR: 1500
+  ENCHANTED_GOLDEN_APPLE: 3000
+  TOTEM_OF_UNDYING: 900
+  DRAGON_EGG: 10000
+  ELYTRA: 3000
+  ROTTEN_FLESH: 0
+  TRIDENT: 600
+  HEART_OF_THE_SEA: 700
+  MUSIC_DISC_PIGSTEP: 500
+  MUSIC_DISC_OTHERSIDE: 450
+
+# Items listed here will always have worth = 0
+blacklist:
+  - BEDROCK
+  - COMMAND_BLOCK
+  - BARRIER
+# ── Display settings ────────────────────────────────────────────────────────
+display:
+  # Show price in item lore (visible in any inventory tooltip)
+  inject-lore: true
+  # Currency symbol shown before price
+  currency-symbol: "$"
