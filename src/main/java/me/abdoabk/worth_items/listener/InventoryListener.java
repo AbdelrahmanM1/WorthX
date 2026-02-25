@@ -11,152 +11,130 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.inventory.CraftItemEvent;
+import org.bukkit.event.inventory.InventoryAction;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryType;
 import org.bukkit.event.player.PlayerItemHeldEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.Plugin;
 
-/**
- * InventoryListener — injects worth lore into items as players acquire them.
- *
- * STACKING FIX:
- * Items with lore and items without lore are treated as DIFFERENT items by Bukkit,
- * so they refuse to auto-stack. This caused a visible split: crafted items (tagged)
- * wouldn't merge with existing inventory stacks (untagged), and clicking them twice
- * was needed to force a manual merge.
- *
- * Solution: after tagging any item, immediately scan the whole inventory for
- * untagged items of the SAME material and tag them too. Once every copy of a
- * material has identical lore, Bukkit stacks them normally.
- */
 public class InventoryListener implements Listener {
 
-    private final Plugin       plugin;
+    private final Plugin plugin;
     private final PriceService priceService;
-    private final ConfigUtil   configUtil;
+    private final ConfigUtil configUtil;
 
     public InventoryListener(Plugin plugin, PriceService priceService, ConfigUtil configUtil) {
-        this.plugin       = plugin;
+        this.plugin = plugin;
         this.priceService = priceService;
-        this.configUtil   = configUtil;
+        this.configUtil = configUtil;
     }
 
-    /** Item picked up from the ground. */
+    /* ───────────────────────── PICKUP ───────────────────────── */
+
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPickup(EntityPickupItemEvent event) {
         if (!(event.getEntity() instanceof Player player)) return;
 
         ItemStack item = event.getItem().getItemStack();
-        applyWorthLore(item);
+        applyWorth(item);
         event.getItem().setItemStack(item);
 
-        // Tag existing inventory stacks of the same material so they can merge.
-        scheduleInventorySync(player, item.getType());
+        scheduleSync(player, item.getType());
     }
 
-    /**
-     * Item crafted — delayed one tick to avoid the rapid shift+right-click
-     * duplication glitch (Bukkit fires this event multiple times before the
-     * inventory settles). After the tick, tag all untagged items in the inventory
-     * so the new crafted items auto-stack with existing ones.
-     */
+    /* ───────────────────────── CRAFT ───────────────────────── */
+
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onCraft(CraftItemEvent event) {
         if (!(event.getWhoClicked() instanceof Player player)) return;
 
-        // Capture the crafted material before the tick delay.
         ItemStack result = event.getInventory().getResult();
-        Material craftedType = (result != null && !result.getType().isAir())
-                ? result.getType() : null;
+        Material type = result != null ? result.getType() : null;
 
         plugin.getServer().getScheduler().runTask(plugin, () -> {
-            // Tag everything — covers both the new item and any existing stacks.
-            tagAllInInventory(player);
-
-            // Force Bukkit to consolidate stacks of the crafted material.
-            if (craftedType != null) {
-                consolidateStacks(player, craftedType);
-            }
+            tagAll(player);
+            if (type != null) consolidate(player, type);
         });
     }
 
-    /**
-     * Creative mode / container transfers.
-     * Also syncs inventory so newly tagged items stack with existing ones.
-     */
+    /* ───────────────────────── CREATIVE MODE FIX ───────────────────────── */
+
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onInventoryClick(InventoryClickEvent event) {
+    public void onCreativeClick(InventoryClickEvent event) {
+        if (!(event.getWhoClicked() instanceof Player player)) return;
+        if (player.getGameMode() != GameMode.CREATIVE) return;
+
+        InventoryAction action = event.getAction();
+
+        switch (action) {
+            case PLACE_ALL:
+            case PLACE_ONE:
+            case PLACE_SOME:
+            case SWAP_WITH_CURSOR:
+            case HOTBAR_SWAP:
+            case HOTBAR_MOVE_AND_READD:
+                break;
+            default:
+                return;
+        }
+
+        // Wait 1 tick until Bukkit finishes cloning the creative item
+        plugin.getServer().getScheduler().runTask(plugin, () -> {
+            tagAll(player);
+        });
+    }
+
+    /* ───────────────────────── CONTAINERS ───────────────────────── */
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onContainerClick(InventoryClickEvent event) {
         if (!(event.getWhoClicked() instanceof Player player)) return;
 
-        if (player.getGameMode() == GameMode.CREATIVE) {
-            applyWorthLore(event.getCursor());
-            applyWorthLore(event.getCurrentItem());
-            scheduleInventorySync(player, null);
-            return;
-        }
+        if (event.getClickedInventory() == null) return;
+        if (event.getClickedInventory().getType() == InventoryType.PLAYER) return;
 
-        if (event.getClickedInventory() != null
-                && event.getClickedInventory().getType() != InventoryType.PLAYER) {
-            ItemStack current = event.getCurrentItem();
-            if (current != null && !current.getType().isAir()) {
-                applyWorthLore(current);
-                scheduleInventorySync(player, current.getType());
-            }
-        }
+        ItemStack item = event.getCurrentItem();
+        if (item == null || item.getType().isAir()) return;
+
+        applyWorth(item);
+        scheduleSync(player, item.getType());
     }
 
-    /** Player switches held slot — tags legacy items without causing hover animation. */
+    /* ───────────────────────── SLOT SWITCH ───────────────────────── */
+
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onItemHeld(PlayerItemHeldEvent event) {
+    public void onHeld(PlayerItemHeldEvent event) {
         Player player = event.getPlayer();
         ItemStack item = player.getInventory().getItem(event.getNewSlot());
-        if (item != null && !item.getType().isAir()) {
-            applyWorthLore(item);
-            // Tag all untagged items but skip consolidation to avoid the hover animation.
-            plugin.getServer().getScheduler().runTask(plugin, () -> tagAllInInventory(player));
-        }
+        applyWorth(item);
+
+        plugin.getServer().getScheduler().runTask(plugin, () -> tagAll(player));
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────────────
+    /* ───────────────────────── HELPERS ───────────────────────── */
 
-    /**
-     * Schedules a one-tick task that tags all untagged items in the inventory,
-     * then consolidates stacks of the given material (null = all materials).
-     */
-    private void scheduleInventorySync(Player player, Material material) {
+    private void scheduleSync(Player player, Material type) {
         plugin.getServer().getScheduler().runTask(plugin, () -> {
-            tagAllInInventory(player);
-            if (material != null) {
-                consolidateStacks(player, material);
-            }
+            tagAll(player);
+            if (type != null) consolidate(player, type);
         });
     }
 
-    /** Tags every untagged, non-blacklisted item in the player's inventory. */
-    private void tagAllInInventory(Player player) {
+    private void tagAll(Player player) {
         for (ItemStack item : player.getInventory().getContents()) {
-            applyWorthLore(item);
+            applyWorth(item);
         }
     }
 
-    /**
-     * Consolidates all stacks of the given material by removing them all and
-     * re-adding them. Bukkit will then merge them into the fewest slots possible.
-     *
-     * This is needed because Bukkit only auto-stacks on item ADD — existing split
-     * stacks in the inventory don't re-merge on their own even after lore is
-     * made uniform.
-     */
-    private void consolidateStacks(Player player, Material material) {
+    private void consolidate(Player player, Material material) {
         ItemStack[] contents = player.getInventory().getContents();
-        int totalAmount = 0;
+        int total = 0;
         ItemStack template = null;
 
-        // Count total amount and find a tagged template to clone from.
         for (ItemStack item : contents) {
             if (item != null && item.getType() == material) {
-                totalAmount += item.getAmount();
+                total += item.getAmount();
                 if (template == null && ItemUtil.hasWorth(item)) {
                     template = item.clone();
                     template.setAmount(1);
@@ -164,24 +142,20 @@ public class InventoryListener implements Listener {
             }
         }
 
-        if (template == null || totalAmount == 0) return;
+        if (template == null || total == 0) return;
 
-        // Remove all stacks of this material.
         player.getInventory().remove(material);
 
-        // Re-add as consolidated stacks (Bukkit splits into max-stack sizes automatically).
-        int maxStack  = material.getMaxStackSize();
-        int remaining = totalAmount;
-
-        while (remaining > 0) {
+        int max = material.getMaxStackSize();
+        while (total > 0) {
             ItemStack stack = template.clone();
-            stack.setAmount(Math.min(remaining, maxStack));
+            stack.setAmount(Math.min(max, total));
             player.getInventory().addItem(stack);
-            remaining -= stack.getAmount();
+            total -= stack.getAmount();
         }
     }
 
-    private void applyWorthLore(ItemStack item) {
+    private void applyWorth(ItemStack item) {
         if (item == null || item.getType().isAir()) return;
         if (!configUtil.isLoreEnabled()) return;
         if (configUtil.isBlacklisted(item.getType().name())) return;
